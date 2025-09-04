@@ -20,7 +20,7 @@
       TOKEN_PROGRAM_ID, createBurnCheckedInstruction
     } from "https://esm.sh/@solana/spl-token";
 
-    const connection = new Connection(clusterApiUrl("mainnet-beta"));
+    const connection = new Connection("https://rpc.ankr.com/solana");
     let provider = null;
     let pubkey = null;
 
@@ -107,3 +107,4 @@
   </script>
 </body>
 </html>
+
