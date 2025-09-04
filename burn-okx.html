@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8" />
-  <title>Solana Token Burner (带 Symbol/Name)</title>
+  <title>Solana Token Burner (OKX & Phantom)</title>
 </head>
 <body style="background:#0b0b0b;color:#cce8cc;font-family:monospace;padding:16px;">
   <h2>🔥 Solana Token Burner (OKX & Phantom)</h2>
@@ -21,7 +21,8 @@
     } from "https://esm.sh/@solana/spl-token";
 
     const METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
-    const connection = new Connection("https://rpc.ankr.com/solana");
+    const RPC_URL = "https://mainnet.helius-rpc.com/?api-key=989d7cc1-be87-4b20-91d0-2fd136b55a74";
+    const connection = new Connection(RPC_URL);
 
     let provider = null;
     let pubkey = null;
@@ -37,7 +38,6 @@
       document.getElementById("log").textContent += msg + "\n";
     }
 
-    // 获取代币 on-chain metadata
     async function getMetadata(mint) {
       try {
         const [pda] = await PublicKey.findProgramAddress(
@@ -46,7 +46,6 @@
         );
         const accountInfo = await connection.getAccountInfo(pda);
         if (!accountInfo) return { name: "N/A", symbol: "N/A" };
-        // Metadata 在前 1 字节 key, 接着是 updateAuthority + mint, name 32字节, symbol 10字节
         const data = accountInfo.data;
         const name = data.slice(33 + 32 + 32, 33 + 32 + 32 + 32).toString().replace(/\0/g, "").trim();
         const symbol = data.slice(33 + 32 + 32 + 32, 33 + 32 + 32 + 32 + 10).toString().replace(/\0/g, "").trim();
@@ -79,18 +78,24 @@
         const tokenList = document.getElementById("token-list");
         tokenList.innerHTML = "";
 
-        // 用 for..of 处理异步 await
-        for (const { account } of resp.value) {
-          const info = account.data.parsed.info;
-          const mintPubkey = new PublicKey(info.mint);
-          const amount = info.tokenAmount.uiAmount;
-          if (amount <= 0) continue;
+        // 并行获取所有 metadata
+        const promises = resp.value
+          .filter(t => t.account.data.parsed.info.tokenAmount.uiAmount > 0)
+          .map(async ({ account }) => {
+            const info = account.data.parsed.info;
+            const mintPubkey = new PublicKey(info.mint);
+            const amount = info.tokenAmount.uiAmount;
+            const metadata = await getMetadata(mintPubkey);
+            return { mint: mintPubkey.toBase58(), amount, name: metadata.name, symbol: metadata.symbol };
+          });
 
-          const metadata = await getMetadata(mintPubkey);
+        const tokens = await Promise.all(promises);
+        tokens.forEach(t => {
           const div = document.createElement("div");
-          div.textContent = `Mint: ${mintPubkey.toBase58()} | Symbol: ${metadata.symbol} | Name: ${metadata.name} | Amount: ${amount}`;
+          div.textContent = `Mint: ${t.mint} | Symbol: ${t.symbol} | Name: ${t.name} | Amount: ${t.amount}`;
           tokenList.appendChild(div);
-        }
+        });
+
       } catch (e) {
         log("加载代币失败: " + e.message);
       }
