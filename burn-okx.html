@@ -2,32 +2,30 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8" />
-  <title>Solana Token Viewer with Symbol (Helius)</title>
+  <title>Solana Token Burner (OKX & Phantom)</title>
 </head>
 <body style="background:#0b0b0b;color:#cce8cc;font-family:monospace;padding:16px;">
-  <h2>🔥 Solana Token Viewer (OKX & Phantom)</h2>
+  <h2>🔥 Solana Token Burner (OKX & Phantom)</h2>
   <button id="connectBtn">连接钱包</button>
   <span id="wallet">未连接</span>
   <div id="token-list"></div>
+  <button id="burn-all">Burn All</button>
   <pre id="log"></pre>
 
   <script type="module">
-    import { Connection, PublicKey } from "https://esm.sh/@solana/web3.js";
-    import { TOKEN_PROGRAM_ID } from "https://esm.sh/@solana/spl-token";
-    import { TokenListProvider, ENV } from "https://esm.sh/@solana/spl-token-registry";
+    import {
+      Connection, PublicKey, Transaction
+    } from "https://esm.sh/@solana/web3.js";
+    import {
+      TOKEN_PROGRAM_ID, createBurnCheckedInstruction
+    } from "https://esm.sh/@solana/spl-token";
 
     // 使用你的 Helius API
-    const connection = new Connection("https://mainnet.helius-rpc.com/?api-key=989d7cc1-be87-4b20-91d0-2fd136b55a74");
+    const RPC_URL = "https://mainnet.helius-rpc.com/?api-key=989d7cc1-be87-4b20-91d0-2fd136b55a74";
+    const connection = new Connection(RPC_URL);
 
     let provider = null;
     let pubkey = null;
-    let tokenMap = new Map();
-
-    async function loadTokenRegistry() {
-      const tokens = await new TokenListProvider().resolve();
-      const tokenList = tokens.filterByChainId(ENV.MainnetBeta).getList();
-      tokenList.forEach(t => tokenMap.set(t.address, t));
-    }
 
     function getProvider() {
       if (window.okxwallet?.solana) return window.okxwallet.solana; // OKX
@@ -51,10 +49,9 @@
         pubkey = resp.publicKey;
         document.getElementById("wallet").textContent = pubkey.toBase58();
         log("已连接钱包: " + pubkey.toBase58());
-        await loadTokenRegistry();
         await loadTokens();
       } catch (e) {
-        log("连接失败: " + JSON.stringify(e));
+        log("连接失败: " + e.message);
       }
     };
 
@@ -62,23 +59,54 @@
       const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
       const listDiv = document.getElementById("token-list");
       listDiv.innerHTML = "";
-
-      for (const { account } of resp.value) {
+      resp.value.forEach(({ pubkey, account }) => {
         const info = account.data.parsed.info;
         const mint = info.mint;
         const amount = info.tokenAmount.uiAmount;
-
         if (amount > 0) {
-          let symbol = "N/A";
-          if (tokenMap.has(mint)) {
-            symbol = tokenMap.get(mint).symbol;
-          }
           const div = document.createElement("div");
-          div.textContent = `Mint: ${mint} | Symbol: ${symbol} | Amount: ${amount}`;
+          div.textContent = `Mint: ${mint} | Amount: ${amount}`;
           listDiv.appendChild(div);
         }
-      }
+      });
     }
+
+    document.getElementById("burn-all").onclick = async () => {
+      if (!provider || !pubkey) return log("请先连接钱包");
+      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+      for (const { pubkey: ata, account } of resp.value) {
+        const info = account.data.parsed.info;
+        const mint = new PublicKey(info.mint);
+        const rawAmount = BigInt(info.tokenAmount.amount);
+        const decimals = info.tokenAmount.decimals;
+        if (rawAmount === 0n) continue;
+
+        log(`开始销毁: ${info.tokenAmount.uiAmountString} | Mint: ${mint.toBase58()}`);
+
+        try {
+          const ix = createBurnCheckedInstruction(
+            ata, mint, pubkey, rawAmount, decimals
+          );
+          const tx = new Transaction().add(ix);
+          tx.feePayer = pubkey;
+          tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+
+          let sig;
+          if (provider.signAndSendTransaction) {
+            const resp = await provider.signAndSendTransaction(tx);
+            sig = resp.signature;
+          } else {
+            const signed = await provider.signTransaction(tx);
+            sig = await connection.sendRawTransaction(signed.serialize());
+          }
+
+          log("✅ 成功 Burn, 交易哈希: " + sig);
+          log("🔗 https://solscan.io/tx/" + sig);
+        } catch (e) {
+          log("❌ 失败: " + e.message);
+        }
+      }
+    };
   </script>
 </body>
 </html>
