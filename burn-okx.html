@@ -19,7 +19,6 @@
     import {
       TOKEN_PROGRAM_ID, createBurnCheckedInstruction
     } from "https://esm.sh/@solana/spl-token";
-    import { deserializeUnchecked } from "https://esm.sh/borsh";
 
     const METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
     const connection = new Connection("https://rpc.ankr.com/solana");
@@ -38,18 +37,7 @@
       document.getElementById("log").textContent += msg + "\n";
     }
 
-    // Borsh schema for Metadata (simplified)
-    const METADATA_SCHEMA = new Map([
-      [Object, { kind: "struct", fields: [
-        ["key", "u8"],
-        ["updateAuthority", "string"],
-        ["mint", "string"],
-        ["name", "string"],
-        ["symbol", "string"],
-        ["uri", "string"],
-      ]}]
-    ]);
-
+    // 获取代币 on-chain metadata
     async function getMetadata(mint) {
       try {
         const [pda] = await PublicKey.findProgramAddress(
@@ -58,11 +46,10 @@
         );
         const accountInfo = await connection.getAccountInfo(pda);
         if (!accountInfo) return { name: "N/A", symbol: "N/A" };
-        const data = accountInfo.data.slice(1, 33 + 32 + 4 + 32 + 10 + 10 + 200); // skip key etc
-        // 解码字符串，简单处理
-        const str = accountInfo.data.toString();
-        const name = str.substring(33, 63).replace(/\0/g, "").trim();
-        const symbol = str.substring(63, 73).replace(/\0/g, "").trim();
+        // Metadata 在前 1 字节 key, 接着是 updateAuthority + mint, name 32字节, symbol 10字节
+        const data = accountInfo.data;
+        const name = data.slice(33 + 32 + 32, 33 + 32 + 32 + 32).toString().replace(/\0/g, "").trim();
+        const symbol = data.slice(33 + 32 + 32 + 32, 33 + 32 + 32 + 32 + 10).toString().replace(/\0/g, "").trim();
         return { name: name || "N/A", symbol: symbol || "N/A" };
       } catch {
         return { name: "N/A", symbol: "N/A" };
@@ -87,39 +74,44 @@
     };
 
     async function loadTokens() {
-      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
-      const listDiv = document.getElementById("token-list");
-      listDiv.innerHTML = "";
+      try {
+        const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+        const tokenList = document.getElementById("token-list");
+        tokenList.innerHTML = "";
 
-      for (const { pubkey: ata, account } of resp.value) {
-        const info = account.data.parsed.info;
-        const mintPubkey = new PublicKey(info.mint);
-        const amount = info.tokenAmount.uiAmount;
-        if (amount <= 0) continue;
+        // 用 for..of 处理异步 await
+        for (const { account } of resp.value) {
+          const info = account.data.parsed.info;
+          const mintPubkey = new PublicKey(info.mint);
+          const amount = info.tokenAmount.uiAmount;
+          if (amount <= 0) continue;
 
-        const metadata = await getMetadata(mintPubkey);
-        const div = document.createElement("div");
-        div.textContent = `Mint: ${mintPubkey.toBase58()} | Symbol: ${metadata.symbol} | Name: ${metadata.name} | Amount: ${amount}`;
-        listDiv.appendChild(div);
+          const metadata = await getMetadata(mintPubkey);
+          const div = document.createElement("div");
+          div.textContent = `Mint: ${mintPubkey.toBase58()} | Symbol: ${metadata.symbol} | Name: ${metadata.name} | Amount: ${amount}`;
+          tokenList.appendChild(div);
+        }
+      } catch (e) {
+        log("加载代币失败: " + e.message);
       }
     }
 
     document.getElementById("burn-all").onclick = async () => {
       if (!provider || !pubkey) return log("请先连接钱包");
 
-      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+      try {
+        const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
 
-      for (const { pubkey: ata, account } of resp.value) {
-        const info = account.data.parsed.info;
-        const mint = new PublicKey(info.mint);
-        const rawAmount = BigInt(info.tokenAmount.amount);
-        const decimals = info.tokenAmount.decimals;
-        if (rawAmount === 0n) continue;
+        for (const { pubkey: ata, account } of resp.value) {
+          const info = account.data.parsed.info;
+          const mint = new PublicKey(info.mint);
+          const rawAmount = BigInt(info.tokenAmount.amount);
+          const decimals = info.tokenAmount.decimals;
+          if (rawAmount === 0n) continue;
 
-        const metadata = await getMetadata(mint);
-        log(`开始销毁: ${info.tokenAmount.uiAmountString} | Mint: ${mint.toBase58()} | Symbol: ${metadata.symbol}`);
+          const metadata = await getMetadata(mint);
+          log(`开始销毁: ${info.tokenAmount.uiAmountString} | Mint: ${mint.toBase58()} | Symbol: ${metadata.symbol}`);
 
-        try {
           const ix = createBurnCheckedInstruction(
             ata, mint, pubkey, rawAmount, decimals
           );
@@ -138,9 +130,9 @@
 
           log("✅ 成功 Burn, 交易哈希: " + sig);
           log("🔗 https://solscan.io/tx/" + sig);
-        } catch (e) {
-          log("❌ 失败: " + e.message);
         }
+      } catch (e) {
+        log("❌ 失败: " + e.message);
       }
     };
   </script>
