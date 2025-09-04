@@ -190,24 +190,27 @@
       await loadEmptyAccounts();
     };
 
-    // 关闭空账户操作
+    // 关闭空账户操作（批量优化版，每笔交易最多 8 个账户）
     document.getElementById("close-empty").onclick = async () => {
       if (!provider || !pubkey) return log("请先连接钱包");
-      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
-      for (const { pubkey: ata, account } of resp.value) {
-        const info = account.data.parsed.info;
-        const amount = info.tokenAmount.uiAmount;
-        const mint = new PublicKey(info.mint);
-        if (amount !== 0) continue;
 
-        log(`尝试关闭空账户: ${ata.toBase58()} | Mint: ${mint.toBase58()}`);
+      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+      const emptyAccounts = resp.value
+        .filter(({ account }) => account.data.parsed.info.tokenAmount.uiAmount === 0)
+        .map(({ pubkey }) => new PublicKey(pubkey));
+
+      if (emptyAccounts.length === 0) return log("没有空账户可关闭");
+
+      const batchSize = 8; // 每批最多 8 个账户
+      for (let i = 0; i < emptyAccounts.length; i += batchSize) {
+        const batch = emptyAccounts.slice(i, i + batchSize);
+        const tx = new Transaction();
+        batch.forEach(ata => tx.add(createCloseAccountInstruction(ata, pubkey, pubkey)));
+
+        tx.feePayer = pubkey;
+        tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
         try {
-          const ix = createCloseAccountInstruction(ata, pubkey, pubkey);
-          const tx = new Transaction().add(ix);
-          tx.feePayer = pubkey;
-          tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
           let sig;
           if (provider.signAndSendTransaction) {
             const resp = await provider.signAndSendTransaction(tx);
@@ -217,16 +220,16 @@
             sig = await connection.sendRawTransaction(signed.serialize());
           }
 
-          log("✅ 成功关闭, 交易哈希: " + sig);
+          log(`✅ 批量关闭 ${batch.length} 个账户成功, 交易哈希: ${sig}`);
           log("🔗 https://solscan.io/tx/" + sig);
         } catch (e) {
-          log("❌ 失败: " + e.message);
+          log("❌ 批量关闭失败: " + e.message);
         }
       }
+
       await loadEmptyAccounts();
       await loadTokens();
     };
   </script>
 </body>
 </html>
-
