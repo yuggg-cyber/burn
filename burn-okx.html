@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>Solana Token Burner (OKX & Phantom)</title>
+</head>
+<body style="background:#0b0b0b;color:#cce8cc;font-family:monospace;padding:16px;">
+  <h2>🔥 Solana Token Burner (OKX & Phantom)</h2>
+  <button id="connectBtn">连接钱包</button>
+  <span id="wallet">未连接</span>
+  <div id="token-list"></div>
+  <button id="burn-all">Burn All</button>
+  <pre id="log"></pre>
+
+  <script type="module">
+    import {
+      Connection, PublicKey, Transaction, clusterApiUrl
+    } from "https://esm.sh/@solana/web3.js";
+    import {
+      TOKEN_PROGRAM_ID, createBurnCheckedInstruction
+    } from "https://esm.sh/@solana/spl-token";
+
+    const connection = new Connection(clusterApiUrl("mainnet-beta"));
+    let provider = null;
+    let pubkey = null;
+
+    function getProvider() {
+      if (window.okxwallet?.solana) return window.okxwallet.solana; // OKX
+      if (window.phantom?.solana) return window.phantom.solana;     // Phantom
+      if (window.solana?.isPhantom) return window.solana;           // 旧版 Phantom
+      return null;
+    }
+
+    function log(msg) {
+      document.getElementById("log").textContent += msg + "\n";
+    }
+
+    document.getElementById("connectBtn").onclick = async () => {
+      provider = getProvider();
+      if (!provider) {
+        log("没有检测到 OKX 或 Phantom 钱包插件！");
+        return;
+      }
+      try {
+        const resp = await provider.connect();
+        pubkey = resp.publicKey;
+        document.getElementById("wallet").textContent = pubkey.toBase58();
+        log("已连接钱包: " + pubkey.toBase58());
+        await loadTokens();
+      } catch (e) {
+        log("连接失败: " + e.message);
+      }
+    };
+
+    async function loadTokens() {
+      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+      const listDiv = document.getElementById("token-list");
+      listDiv.innerHTML = "";
+      resp.value.forEach(({ pubkey, account }) => {
+        const info = account.data.parsed.info;
+        const mint = info.mint;
+        const amount = info.tokenAmount.uiAmount;
+        if (amount > 0) {
+          const div = document.createElement("div");
+          div.textContent = `Mint: ${mint} | Amount: ${amount}`;
+          listDiv.appendChild(div);
+        }
+      });
+    }
+
+    document.getElementById("burn-all").onclick = async () => {
+      if (!provider || !pubkey) return log("请先连接钱包");
+      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+      for (const { pubkey: ata, account } of resp.value) {
+        const info = account.data.parsed.info;
+        const mint = new PublicKey(info.mint);
+        const rawAmount = BigInt(info.tokenAmount.amount);
+        const decimals = info.tokenAmount.decimals;
+        if (rawAmount === 0n) continue;
+
+        log(`开始销毁: ${info.tokenAmount.uiAmountString} | Mint: ${mint.toBase58()}`);
+
+        try {
+          const ix = createBurnCheckedInstruction(
+            ata, mint, pubkey, rawAmount, decimals
+          );
+          const tx = new Transaction().add(ix);
+          tx.feePayer = pubkey;
+          tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+
+          let sig;
+          if (provider.signAndSendTransaction) {
+            const resp = await provider.signAndSendTransaction(tx);
+            sig = resp.signature;
+          } else {
+            const signed = await provider.signTransaction(tx);
+            sig = await connection.sendRawTransaction(signed.serialize());
+          }
+
+          log("✅ 成功 Burn, 交易哈希: " + sig);
+          log("🔗 https://solscan.io/tx/" + sig);
+        } catch (e) {
+          log("❌ 失败: " + e.message);
+        }
+      }
+    };
+  </script>
+</body>
+</html>
