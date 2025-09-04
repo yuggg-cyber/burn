@@ -13,12 +13,10 @@
   <pre id="log"></pre>
 
   <script type="module">
-    import { Connection, PublicKey, Transaction } from "https://esm.sh/@solana/web3.js";
+    import { PublicKey, Transaction } from "https://esm.sh/@solana/web3.js";
     import { TOKEN_PROGRAM_ID, createBurnCheckedInstruction } from "https://esm.sh/@solana/spl-token";
 
-    // 使用你的 Helius API
-    const RPC_URL = "https://mainnet.helius-rpc.com/?api-key=989d7cc1-be87-4b20-91d0-2fd136b55a74";
-    const connection = new Connection(RPC_URL);
+    const HELIUS_API = "https://mainnet.helius-rpc.com/?api-key=989d7cc1-be87-4b20-91d0-2fd136b55a74";
 
     let provider = null;
     let pubkey = null;
@@ -32,29 +30,6 @@
 
     function log(msg) {
       document.getElementById("log").textContent += msg + "\n";
-    }
-
-    // 查询代币 metadata (symbol/name)
-    async function fetchTokenMetadata(mint) {
-      try {
-        const res = await fetch(RPC_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "getTokenMetadata",
-            params: [mint]
-          })
-        });
-        const data = await res.json();
-        if (data.result && data.result.symbol) {
-          return { symbol: data.result.symbol, name: data.result.name || "N/A" };
-        }
-        return { symbol: "N/A", name: "N/A" };
-      } catch (e) {
-        return { symbol: "N/A", name: "N/A" };
-      }
     }
 
     document.getElementById("connectBtn").onclick = async () => {
@@ -74,58 +49,75 @@
       }
     };
 
+    // 使用 Helius REST API 批量获取代币信息
     async function loadTokens() {
-      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
-      const listDiv = document.getElementById("token-list");
-      listDiv.innerHTML = "";
+      try {
+        const res = await fetch(`${HELIUS_API}/v1/addresses/${pubkey.toBase58()}/balances?includeTokenMetadata=true`);
+        const data = await res.json();
 
-      for (const { pubkey: ataPubkey, account } of resp.value) {
-        const info = account.data.parsed.info;
-        const mint = info.mint;
-        const amount = info.tokenAmount.uiAmount;
-        if (amount > 0) {
-          const meta = await fetchTokenMetadata(mint);
-          const div = document.createElement("div");
-          div.textContent = `Mint: ${mint} | Symbol: ${meta.symbol} | Name: ${meta.name} | Amount: ${amount}`;
-          listDiv.appendChild(div);
-        }
+        const listDiv = document.getElementById("token-list");
+        listDiv.innerHTML = "";
+
+        data.forEach(token => {
+          if (token.amount && Number(token.amount) > 0) {
+            const symbol = token.metadata?.symbol || "N/A";
+            const name = token.metadata?.name || "N/A";
+            const div = document.createElement("div");
+            div.textContent = `Mint: ${token.mint} | Symbol: ${symbol} | Name: ${name} | Amount: ${token.uiAmount}`;
+            listDiv.appendChild(div);
+          }
+        });
+      } catch (e) {
+        log("加载代币失败: " + e.message);
       }
     }
 
     document.getElementById("burn-all").onclick = async () => {
       if (!provider || !pubkey) return log("请先连接钱包");
 
-      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
-      for (const { pubkey: ata, account } of resp.value) {
-        const info = account.data.parsed.info;
-        const mint = new PublicKey(info.mint);
-        const rawAmount = BigInt(info.tokenAmount.amount);
-        const decimals = info.tokenAmount.decimals;
-        if (rawAmount === 0n) continue;
+      try {
+        const res = await fetch(`${HELIUS_API}/v1/addresses/${pubkey.toBase58()}/balances?includeTokenMetadata=true`);
+        const data = await res.json();
 
-        const meta = await fetchTokenMetadata(info.mint);
-        log(`开始销毁: ${info.tokenAmount.uiAmountString} | Mint: ${mint.toBase58()} | Symbol: ${meta.symbol}`);
+        for (const token of data) {
+          if (!token.amount || BigInt(token.amount) === 0n) continue;
 
-        try {
-          const ix = createBurnCheckedInstruction(ata, mint, pubkey, rawAmount, decimals);
-          const tx = new Transaction().add(ix);
-          tx.feePayer = pubkey;
-          tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+          const mint = new PublicKey(token.mint);
+          const rawAmount = BigInt(token.amount);
+          const decimals = token.metadata?.decimals || 0;
 
-          let sig;
-          if (provider.signAndSendTransaction) {
-            const resp = await provider.signAndSendTransaction(tx);
-            sig = resp.signature;
-          } else {
-            const signed = await provider.signTransaction(tx);
-            sig = await connection.sendRawTransaction(signed.serialize());
+          log(`开始销毁: ${token.uiAmount} | Mint: ${mint.toBase58()} | Symbol: ${token.metadata?.symbol || "N/A"}`);
+
+          try {
+            const ix = createBurnCheckedInstruction(
+              token.tokenAddress,
+              mint,
+              pubkey,
+              rawAmount,
+              decimals
+            );
+
+            const tx = new Transaction().add(ix);
+            tx.feePayer = pubkey;
+            tx.recentBlockhash = (await provider.connection.getLatestBlockhash()).blockhash;
+
+            let sig;
+            if (provider.signAndSendTransaction) {
+              const resp = await provider.signAndSendTransaction(tx);
+              sig = resp.signature;
+            } else {
+              const signed = await provider.signTransaction(tx);
+              sig = await provider.connection.sendRawTransaction(signed.serialize());
+            }
+
+            log("✅ 成功 Burn, 交易哈希: " + sig);
+            log("🔗 https://solscan.io/tx/" + sig);
+          } catch (e) {
+            log("❌ 失败: " + e.message);
           }
-
-          log("✅ 成功 Burn, 交易哈希: " + sig);
-          log("🔗 https://solscan.io/tx/" + sig);
-        } catch (e) {
-          log("❌ 失败: " + e.message);
         }
+      } catch (e) {
+        log("获取代币失败: " + e.message);
       }
     };
   </script>
