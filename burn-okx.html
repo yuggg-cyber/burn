@@ -2,14 +2,21 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8" />
-  <title>Solana Token Burner (OKX & Phantom)</title>
+  <title>Solana Token Burner & Close Empty Accounts</title>
 </head>
 <body style="background:#0b0b0b;color:#cce8cc;font-family:monospace;padding:16px;">
-  <h2>🔥 Solana Token Burner (OKX & Phantom)</h2>
+  <h2>🔥 Solana Token Burner & Close Empty Accounts (OKX & Phantom)</h2>
   <button id="connectBtn">连接钱包</button>
   <span id="wallet">未连接</span>
+
+  <h3>🔥 上半部分: Burn Tokens</h3>
   <div id="token-list"></div>
   <button id="burn-all">Burn All</button>
+
+  <h3>🗑 下半部分: Close Empty Token Accounts</h3>
+  <div id="empty-token-list"></div>
+  <button id="close-empty">Close All Empty Accounts</button>
+
   <pre id="log"></pre>
 
   <script type="module">
@@ -17,7 +24,7 @@
       Connection, PublicKey, Transaction
     } from "https://esm.sh/@solana/web3.js";
     import {
-      TOKEN_PROGRAM_ID, createBurnCheckedInstruction
+      TOKEN_PROGRAM_ID, createBurnCheckedInstruction, createCloseAccountInstruction
     } from "https://esm.sh/@solana/spl-token";
 
     // 使用你的 Helius API
@@ -50,6 +57,7 @@
         document.getElementById("wallet").textContent = pubkey.toBase58();
         log("已连接钱包: " + pubkey.toBase58());
         await loadTokens();
+        await loadEmptyAccounts();
       } catch (e) {
         log("连接失败: " + e.message);
       }
@@ -71,6 +79,22 @@
       });
     }
 
+    async function loadEmptyAccounts() {
+      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+      const listDiv = document.getElementById("empty-token-list");
+      listDiv.innerHTML = "";
+      resp.value.forEach(({ pubkey, account }) => {
+        const info = account.data.parsed.info;
+        const amount = info.tokenAmount.uiAmount;
+        if (amount === 0) {
+          const div = document.createElement("div");
+          div.textContent = `Empty Account: ${pubkey.toBase58()} | Mint: ${info.mint}`;
+          listDiv.appendChild(div);
+        }
+      });
+    }
+
+    // Burn 功能
     document.getElementById("burn-all").onclick = async () => {
       if (!provider || !pubkey) return log("请先连接钱包");
       const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
@@ -106,7 +130,50 @@
           log("❌ 失败: " + e.message);
         }
       }
+      await loadTokens();
+      await loadEmptyAccounts();
     };
+
+    // Close Empty Accounts 功能
+    document.getElementById("close-empty").onclick = async () => {
+      if (!provider || !pubkey) return log("请先连接钱包");
+      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+      for (const { pubkey: ata, account } of resp.value) {
+        const info = account.data.parsed.info;
+        const amount = info.tokenAmount.uiAmount;
+        const mint = new PublicKey(info.mint);
+        if (amount !== 0) continue;
+
+        log(`尝试关闭空账户: ${ata.toBase58()} | Mint: ${mint.toBase58()}`);
+
+        try {
+          const ix = createCloseAccountInstruction(
+            ata,
+            pubkey,  // 收回 SOL 地址
+            pubkey   // 所属者
+          );
+          const tx = new Transaction().add(ix);
+          tx.feePayer = pubkey;
+          tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+
+          let sig;
+          if (provider.signAndSendTransaction) {
+            const resp = await provider.signAndSendTransaction(tx);
+            sig = resp.signature;
+          } else {
+            const signed = await provider.signTransaction(tx);
+            sig = await connection.sendRawTransaction(signed.serialize());
+          }
+
+          log("✅ 成功关闭, 交易哈希: " + sig);
+          log("🔗 https://solscan.io/tx/" + sig);
+        } catch (e) {
+          log("❌ 失败: " + e.message);
+        }
+      }
+      await loadEmptyAccounts();
+    };
+
   </script>
 </body>
 </html>
