@@ -14,13 +14,16 @@
 
   <script type="module">
     import {
-      Connection, PublicKey, Transaction, clusterApiUrl
+      Connection, PublicKey, Transaction
     } from "https://esm.sh/@solana/web3.js";
     import {
       TOKEN_PROGRAM_ID, createBurnCheckedInstruction
     } from "https://esm.sh/@solana/spl-token";
 
-    const connection = new Connection("https://mainnet.helius-rpc.com/?api-key=989d7cc1-be87-4b20-91d0-2fd136b55a74");
+    // 使用你的 Helius API
+    const RPC_URL = "https://mainnet.helius-rpc.com/?api-key=989d7cc1-be87-4b20-91d0-2fd136b55a74";
+    const connection = new Connection(RPC_URL);
+
     let provider = null;
     let pubkey = null;
 
@@ -107,5 +110,3 @@
   </script>
 </body>
 </html>
-
-
