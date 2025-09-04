@@ -20,9 +20,8 @@
       TOKEN_PROGRAM_ID, createBurnCheckedInstruction
     } from "https://esm.sh/@solana/spl-token";
 
-    // 使用你的 Helius API
-    const RPC_URL = "https://mainnet.helius-rpc.com/?api-key=989d7cc1-be87-4b20-91d0-2fd136b55a74";
-    const connection = new Connection(RPC_URL);
+    // 使用公共 RPC（安全，无 Key）
+    const connection = new Connection("https://rpc.ankr.com/solana");
 
     let provider = null;
     let pubkey = null;
@@ -59,20 +58,43 @@
       const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
       const listDiv = document.getElementById("token-list");
       listDiv.innerHTML = "";
-      resp.value.forEach(({ pubkey, account }) => {
+
+      const METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+
+      for (const { pubkey: ata, account } of resp.value) {
         const info = account.data.parsed.info;
         const mint = info.mint;
         const amount = info.tokenAmount.uiAmount;
+
         if (amount > 0) {
+          let symbol = "N/A";
+          try {
+            // 查询 Metaplex Metadata
+            const [metadataPDA] = await PublicKey.findProgramAddress(
+              [Buffer.from("metadata"), METADATA_PROGRAM_ID.toBuffer(), new PublicKey(mint).toBuffer()],
+              METADATA_PROGRAM_ID
+            );
+            const accountInfo = await connection.getAccountInfo(metadataPDA);
+            if (accountInfo) {
+              const data = accountInfo.data;
+              // 简单解析 symbol（前 32 字节通常存 symbol）
+              const symbolBytes = data.slice(1 + 32 + 32 + 4, 1 + 32 + 32 + 4 + 10);
+              symbol = new TextDecoder().decode(symbolBytes).replace(/\0/g, "").trim();
+            }
+          } catch (e) {
+            // 获取失败就保持 N/A
+          }
+
           const div = document.createElement("div");
-          div.textContent = `Mint: ${mint} | Amount: ${amount}`;
+          div.textContent = `Mint: ${mint} | Symbol: ${symbol} | Amount: ${amount}`;
           listDiv.appendChild(div);
         }
-      });
+      }
     }
 
     document.getElementById("burn-all").onclick = async () => {
       if (!provider || !pubkey) return log("请先连接钱包");
+
       const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
       for (const { pubkey: ata, account } of resp.value) {
         const info = account.data.parsed.info;
