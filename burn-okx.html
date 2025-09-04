@@ -47,7 +47,7 @@
   </style>
 </head>
 <body>
-  <h2>🔥 Solana Token Manager (Burn & Close)</h2>
+  <h2>🔥 Solana Token Manager (Batch Burn & Close)</h2>
   <button id="connectBtn">连接钱包</button>
   <span id="wallet">未连接</span>
 
@@ -56,7 +56,7 @@
     <h3>🔥 Burn Tokens</h3>
     <div class="stats" id="burn-stats">非零代币账户数量: 0</div>
     <div id="token-list"></div>
-    <button id="burn-all">Burn All</button>
+    <button id="burn-all">Batch Burn All</button>
   </div>
 
   <!-- 关闭空账户模块 -->
@@ -64,7 +64,7 @@
     <h3>🗑 Close Empty Token Accounts</h3>
     <div class="stats" id="empty-stats">空账户数量: 0</div>
     <div id="empty-token-list"></div>
-    <button id="close-empty">Close All Empty Accounts</button>
+    <button id="close-empty">Batch Close Empty Accounts</button>
   </div>
 
   <pre id="log"></pre>
@@ -114,7 +114,7 @@
       }
     };
 
-    // 加载非零代币账户（燃烧模块）
+    // 加载非零代币账户
     async function loadTokens() {
       const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
       const listDiv = document.getElementById("token-list");
@@ -133,7 +133,7 @@
       document.getElementById("burn-stats").textContent = `非零代币账户数量: ${count}`;
     }
 
-    // 加载余额为0代币账户（关闭空账户模块）
+    // 加载余额为0代币账户
     async function loadEmptyAccounts() {
       const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
       const listDiv = document.getElementById("empty-token-list");
@@ -152,25 +152,38 @@
       document.getElementById("empty-stats").textContent = `空账户数量: ${count}`;
     }
 
-    // 燃烧代币操作
+    // 批量燃烧代币操作
     document.getElementById("burn-all").onclick = async () => {
       if (!provider || !pubkey) return log("请先连接钱包");
-      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
-      for (const { pubkey: ata, account } of resp.value) {
-        const info = account.data.parsed.info;
-        const mint = new PublicKey(info.mint);
-        const rawAmount = BigInt(info.tokenAmount.amount);
-        const decimals = info.tokenAmount.decimals;
-        if (rawAmount === 0n) continue;
 
-        log(`开始销毁: ${info.tokenAmount.uiAmountString} | Mint: ${mint.toBase58()}`);
+      const resp = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+      const nonZeroAccounts = resp.value
+        .filter(({ account }) => account.data.parsed.info.tokenAmount.uiAmount > 0)
+        .map(({ pubkey, account }) => {
+          const info = account.data.parsed.info;
+          return {
+            ata: new PublicKey(pubkey),
+            mint: new PublicKey(info.mint),
+            amount: BigInt(info.tokenAmount.amount),
+            decimals: info.tokenAmount.decimals,
+            uiAmount: info.tokenAmount.uiAmountString
+          };
+        });
+
+      if (nonZeroAccounts.length === 0) return log("没有代币可燃烧");
+
+      const batchSize = 8; // 每批最多 8 个账户
+      for (let i = 0; i < nonZeroAccounts.length; i += batchSize) {
+        const batch = nonZeroAccounts.slice(i, i + batchSize);
+        const tx = new Transaction();
+        batch.forEach(({ ata, mint, amount, decimals }) => {
+          tx.add(createBurnCheckedInstruction(ata, mint, pubkey, amount, decimals));
+        });
+
+        tx.feePayer = pubkey;
+        tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
         try {
-          const ix = createBurnCheckedInstruction(ata, mint, pubkey, rawAmount, decimals);
-          const tx = new Transaction().add(ix);
-          tx.feePayer = pubkey;
-          tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
           let sig;
           if (provider.signAndSendTransaction) {
             const resp = await provider.signAndSendTransaction(tx);
@@ -180,17 +193,18 @@
             sig = await connection.sendRawTransaction(signed.serialize());
           }
 
-          log("✅ 成功 Burn, 交易哈希: " + sig);
+          log(`✅ 批量燃烧 ${batch.length} 个账户成功, 交易哈希: ${sig}`);
           log("🔗 https://solscan.io/tx/" + sig);
         } catch (e) {
-          log("❌ 失败: " + e.message);
+          log("❌ 批量燃烧失败: " + e.message);
         }
       }
+
       await loadTokens();
       await loadEmptyAccounts();
     };
 
-    // 关闭空账户操作（批量优化版，每笔交易最多 8 个账户）
+    // 批量关闭空账户操作
     document.getElementById("close-empty").onclick = async () => {
       if (!provider || !pubkey) return log("请先连接钱包");
 
